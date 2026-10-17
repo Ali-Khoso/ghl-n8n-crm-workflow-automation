@@ -1,0 +1,371 @@
+{
+  "name": "GoHighLevel CRM Workflow Automation",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "buyer-deal-matcher",
+        "options": {}
+      },
+      "id": "2efb25e3-baee-448e-8aaa-e025db1a629c",
+      "name": "1. Deal Trigger (Webhook)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -1680,
+        224
+      ],
+      "webhookId": "buyer-deal-matcher"
+    },
+    {
+      "parameters": {
+        "url": "=https://services.leadconnectorhq.com/opportunities/{{ $json.body.opportunityId }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Version",
+              "value": "2021-07-28"
+            },
+            {
+              "name": "Accept",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "b62523f0-5f40-4b24-947a-1a5c0a523638",
+      "name": "2. Get Deal",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -1440,
+        224
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Pulls the deal_* custom fields into flat top-level keys\nconst opp = $input.first().json.opportunity || $input.first().json;\nconst cf = {};\n(opp.customFields || []).forEach(f => { cf[f.key || f.id] = f.value; });\n\nreturn [{\n  json: {\n    opportunityId: opp.id,\n    locationId: $('1. Deal Trigger (Webhook)').first().json.body.locationId,\n    deal_address: cf.deal_address || '',\n    deal_county: cf.deal_county || '',\n    deal_zip: cf.deal_zip || '',\n    deal_state: cf.deal_state || '',\n    deal_price: cf.deal_price || '',\n    deal_property_type: cf.deal_property_type || '',\n    deal_beds_baths: cf.deal_beds_baths || '',\n    deal_link: cf.deal_link || '',\n    deal_message: cf.deal_message || '',\n    deal_showing_datetime: cf.deal_showing_datetime || ''\n  }\n}];"
+      },
+      "id": "ae80bb27-f55e-47d4-b215-0584a8ef908b",
+      "name": "3. Extract Deal Fields",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1200,
+        224
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.deal_message }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty"
+              },
+              "id": "6f2dc611-6d13-4dad-a8c3-e737c3fbfb17"
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "8da9c9d7-7716-43cb-af51-e539863bdf15",
+      "name": "4. Gate: deal_message filled?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -960,
+        224
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://services.leadconnectorhq.com/contacts/search",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Version",
+              "value": "2021-07-28"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"locationId\": \"{{ $json.locationId }}\",\n  \"pageLimit\": 100,\n  \"filters\": [\n    { \"field\": \"customFields.active_buyer\", \"operator\": \"eq\", \"value\": \"Yes\" },\n    { \"field\": \"customFields.buyer_state\", \"operator\": \"eq\", \"value\": \"{{ $json.deal_state }}\" },\n    { \"field\": \"customFields.property_types\", \"operator\": \"contains\", \"value\": \"{{ $json.deal_property_type }}\" }\n  ],\n  \"exclude\": {\n    \"tags\": [\"deal-blast-active\", \"dnc\"]\n  }\n}",
+        "options": {}
+      },
+      "id": "8bbc8b0e-f424-4200-9bc3-71c9a98b1ca4",
+      "name": "5. Search Matching Buyers",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -720,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Refine matches: county OR zip logic that GHL's search can't express directly,\n// plus multi-value county/zip parsing.\nconst deal = $('3. Extract Deal Fields').first().json;\nconst contacts = $input.first().json.contacts || [];\n\nconst getCF = (contact, key) => {\n  const f = (contact.customFields || []).find(x => x.key === key || x.id === key);\n  return f ? f.value : null;\n};\n\nconst toList = (v) => Array.isArray(v) ? v : (typeof v === 'string' ? v.split(',').map(s => s.trim()) : []);\n\nconst matched = contacts.filter(c => {\n  const counties = toList(getCF(c, 'buying_counties'));\n  const zips = toList(getCF(c, 'buying_zips'));\n  const countyMatch = counties.includes(deal.deal_county);\n  const zipMatch = zips.includes(deal.deal_zip);\n  return countyMatch || zipMatch;\n});\n\nreturn matched.map(c => ({\n  json: {\n    buyerId: c.id,\n    ...deal\n  }\n}));"
+      },
+      "id": "ef49a1af-468d-4e29-841a-47fc01974fc5",
+      "name": "6. Refine Buyer List",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -480,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "batchSize": 5,
+        "options": {}
+      },
+      "id": "90bf16a2-7776-418a-bdca-939ac22a5f18",
+      "name": "7. Loop Buyers (5 at a time)",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        -240,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "=https://services.leadconnectorhq.com/contacts/{{ $json.buyerId }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Version",
+              "value": "2021-07-28"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"customFields\": [\n    { \"key\": \"current_deal_id\", \"field_value\": \"{{ $json.opportunityId }}\" },\n    { \"key\": \"deal_address\", \"field_value\": \"{{ $json.deal_address }}\" },\n    { \"key\": \"deal_price\", \"field_value\": \"{{ $json.deal_price }}\" },\n    { \"key\": \"deal_beds_baths\", \"field_value\": \"{{ $json.deal_beds_baths }}\" },\n    { \"key\": \"deal_link\", \"field_value\": \"{{ $json.deal_link }}\" },\n    { \"key\": \"deal_message\", \"field_value\": \"{{ $json.deal_message }}\" },\n    { \"key\": \"deal_blast_active\", \"field_value\": \"Yes\" }\n  ]\n}",
+        "options": {}
+      },
+      "id": "9b37c5b0-32f7-4cbd-b9a5-29865d7fde15",
+      "name": "8. Stamp Deal Fields on Buyer",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://services.leadconnectorhq.com/contacts/{{ $json.buyerId }}/workflow/YOUR_GHL_WORKFLOW_ID",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Version",
+              "value": "2021-07-28"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "06ba9ef2-2610-4822-9ef5-a595cbb7e47e",
+      "name": "9. Enroll Buyer in Deal Blast",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        224,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "amount": 2
+      },
+      "id": "609c9d19-cd2a-4119-8f1b-bf9933adeba5",
+      "name": "10. Wait (rate limit)",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        224,
+        160
+      ],
+      "webhookId": "f90b364e-8e8e-49bd-a9ef-ecaf866b3c4b"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Final summary log after loop completes\nconst all = $('6. Refine Buyer List').all();\nreturn [{\n  json: {\n    opportunityId: $('3. Extract Deal Fields').first().json.opportunityId,\n    matched_and_enrolled: all.length,\n    timestamp: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "d9e3ffb5-873a-44ee-b041-e11768ef8a67",
+      "name": "11. Log Summary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        352
+      ]
+    }
+  ],
+  "connections": {
+    "1. Deal Trigger (Webhook)": {
+      "main": [
+        [
+          {
+            "node": "2. Get Deal",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "2. Get Deal": {
+      "main": [
+        [
+          {
+            "node": "3. Extract Deal Fields",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "3. Extract Deal Fields": {
+      "main": [
+        [
+          {
+            "node": "4. Gate: deal_message filled?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "4. Gate: deal_message filled?": {
+      "main": [
+        [
+          {
+            "node": "5. Search Matching Buyers",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "5. Search Matching Buyers": {
+      "main": [
+        [
+          {
+            "node": "6. Refine Buyer List",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "6. Refine Buyer List": {
+      "main": [
+        [
+          {
+            "node": "7. Loop Buyers (5 at a time)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "7. Loop Buyers (5 at a time)": {
+      "main": [
+        [
+          {
+            "node": "11. Log Summary",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "8. Stamp Deal Fields on Buyer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "8. Stamp Deal Fields on Buyer": {
+      "main": [
+        [
+          {
+            "node": "9. Enroll Buyer in Deal Blast",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "9. Enroll Buyer in Deal Blast": {
+      "main": [
+        [
+          {
+            "node": "10. Wait (rate limit)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "10. Wait (rate limit)": {
+      "main": [
+        [
+          {
+            "node": "7. Loop Buyers (5 at a time)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "tags": []
+}
